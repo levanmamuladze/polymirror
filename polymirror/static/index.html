@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Polymirror — Paper Copy-Trading Desk</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root{
+    --ink:#0d1421;          /* deep ink navy — page ground */
+    --panel:#141d2e;
+    --panel-2:#1a2539;
+    --line:#26334c;
+    --text:#e8edf6;
+    --muted:#8a97ad;
+    --gain:#38d9a9;         /* profit teal */
+    --loss:#ff7a6e;         /* loss coral */
+    --paper:#f5b942;        /* amber — "this is paper" */
+    --mono:"IBM Plex Mono","SFMono-Regular",Consolas,"Liberation Mono",monospace;
+    --sans:"Inter","Segoe UI",system-ui,-apple-system,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{max-width:100%;overflow-x:hidden}   /* hard guarantee: the page itself never scrolls horizontally */
+  body{background:var(--ink);color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.5}
+  a{color:inherit}
+
+  header{display:flex;align-items:baseline;gap:16px;padding:18px 24px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  header h1{font-family:var(--mono);font-size:18px;font-weight:600;letter-spacing:.04em}
+  .badge.live{background:var(--loss);color:#fff}
+  .badge{font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--ink);
+    background:var(--paper);padding:3px 10px;border-radius:3px;font-weight:700}
+  .conn{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--muted)}
+  .conn.err{color:var(--loss)}
+
+  main{max-width:1280px;margin:0 auto;padding:20px 24px 60px;display:grid;gap:20px}
+  /* Grid items don't shrink below their content's natural size by default
+     (CSS's "min-width:auto" rule) — a single wide child (the Chart.js
+     canvas, in practice) can silently force the whole grid, and therefore
+     the whole page, wider than the viewport. min-width:0 on every grid
+     item is the standard fix. */
+  main > *, .grid2 > *{min-width:0}
+
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+
+  /* ------------------------------------------------------------ responsive */
+  @media(max-width:640px){
+    header{padding:14px 14px;gap:10px}
+    header h1{font-size:16px}
+    .conn{width:100%;margin-left:0;order:3}
+    main{padding:14px 14px 40px;gap:14px}
+    .stats{grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}
+    .stat{padding:10px 11px}
+    .stat .v{font-size:17px}
+    section{padding:12px}
+    table{font-size:11.5px}
+    th,td{padding:6px}
+    .title-cell{max-width:160px}
+    .halt-banner{padding:8px 14px}
+  }
+  @media(max-width:420px){
+    .stats{grid-template-columns:repeat(2,1fr)}
+  }
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px}
+  .stat .k{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .stat .v{font-family:var(--mono);font-size:20px;margin-top:4px}
+  .pos{color:var(--gain)} .neg{color:var(--loss)}
+
+  .grid2{display:grid;grid-template-columns:2fr 1fr;gap:20px}
+  @media(max-width:900px){.grid2{grid-template-columns:1fr}}
+
+  section{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:16px}
+  section h2{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:12px}
+
+  table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px}
+  th{font-family:var(--sans);text-align:left;font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+     color:var(--muted);padding:6px 8px;border-bottom:1px solid var(--line);font-weight:600}
+  td{padding:7px 8px;border-bottom:1px solid rgba(38,51,76,.5);vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  td.num{text-align:right;white-space:nowrap}
+  .title-cell{font-family:var(--sans);max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .outcome{font-size:11px;color:var(--muted)}
+
+  /* signature: probability strip — mark price rendered as a 0–100% fill */
+  .prob{position:relative;width:90px;height:14px;background:var(--panel-2);border-radius:2px;overflow:hidden}
+  .prob i{position:absolute;inset:0;width:0;background:linear-gradient(90deg,#2f6fed,#38d9a9)}
+  .prob span{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+     font-size:10px;font-family:var(--mono);mix-blend-mode:screen}
+
+  .empty{color:var(--muted);font-family:var(--mono);font-size:12.5px;padding:12px 4px}
+
+  form.addw{display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:8px;margin-bottom:14px}
+  @media(max-width:900px){form.addw{grid-template-columns:1fr 1fr}}
+  @media(max-width:480px){form.addw{grid-template-columns:1fr}}
+  form.txform{display:grid;grid-template-columns:1fr 2fr auto auto;gap:8px;margin-bottom:12px}
+  @media(max-width:640px){form.txform{grid-template-columns:1fr 1fr}}
+  @media(max-width:420px){form.txform{grid-template-columns:1fr}}
+  input,select,button{background:var(--panel-2);border:1px solid var(--line);color:var(--text);
+     border-radius:4px;padding:7px 10px;font-family:var(--mono);font-size:12.5px;min-height:34px}
+  input:focus,select:focus,button:focus-visible{outline:2px solid #2f6fed;outline-offset:1px}
+  button{cursor:pointer}
+  button.primary{background:#2f6fed;border-color:#2f6fed;font-weight:600}
+  button.small{padding:3px 8px;font-size:11px;min-height:auto}
+  button.danger{color:var(--loss)}
+  .fine-print{font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:10px}
+
+  .log{font-family:var(--mono);font-size:12px;max-height:340px;overflow-y:auto;display:grid;gap:4px}
+  .log .row{display:flex;gap:10px;padding:4px 6px;border-radius:3px}
+  .log .row:nth-child(odd){background:rgba(255,255,255,.02)}
+  .log time{color:var(--muted);white-space:nowrap}
+  .lvl{width:7px;height:7px;border-radius:50%;margin-top:6px;flex:none}
+  .lvl.info{background:#2f6fed}.lvl.warning{background:var(--paper)}.lvl.error{background:var(--loss)}
+
+  .chart-box{position:relative;width:100%;height:280px}
+  .chart-box canvas{max-width:100%}
+  .alloc-row{display:grid;grid-template-columns:1fr 70px;gap:8px;align-items:center;margin-bottom:8px;
+     font-family:var(--mono);font-size:12px}
+  .alloc-row > *{min-width:0}   /* same grid-shrink fix as main/.grid2 — the label's white-space:nowrap
+                                   text was overflowing into the value column instead of ellipsis-truncating */
+  .alloc-bar{height:10px;background:var(--panel-2);border-radius:2px;overflow:hidden}
+  .alloc-bar i{display:block;height:100%;background:#2f6fed}
+  .alloc-label{font-family:var(--sans);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tag{font-family:var(--mono);font-size:9px;letter-spacing:.08em;padding:1px 5px;border-radius:2px;
+     background:#2f6fed;color:#fff;font-weight:700;vertical-align:middle}
+  .tag.pass{background:var(--gain);color:var(--ink)}
+  .tag.fail{background:var(--panel-2);color:var(--muted)}
+  .scout-note{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-bottom:10px}
+  .scout-note.warn{color:var(--paper)}
+  .reason{font-family:var(--sans);font-size:11px;color:var(--muted);max-width:260px;
+     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #haltBtn{border-color:var(--loss);color:var(--loss);font-weight:700}
+  #haltBtn.resume{border-color:var(--gain);color:var(--gain)}
+  .halt-banner{background:var(--loss);color:var(--ink);font-family:var(--mono);font-size:12.5px;
+     font-weight:700;padding:8px 24px;letter-spacing:.03em}
+</style>
+</head>
+<body>
+<header>
+  <h1>POLYMIRROR</h1>
+  <span class="badge" id="modeBadge">PAPER TRADING · NO REAL FUNDS</span>
+  <button id="haltBtn" class="small" style="display:none"></button>
+  <span class="conn" id="conn">connecting…</span>
+</header>
+<div id="haltBanner" class="halt-banner" hidden></div>
+
+<main>
+  <div class="stats" id="stats"></div>
+
+  <section>
+    <h2>Deposit / Withdraw</h2>
+    <div class="fine-print">Paper simulation only — adjusts your simulated cash balance. The address is a free-text label for your own reference; it is never validated against a real chain, signed, or sent anywhere.</div>
+    <form class="txform" id="transferForm" onsubmit="return false">
+      <input name="amount" type="number" step="any" min="0.01" placeholder="Amount USD" required>
+      <input name="address" placeholder="Wallet address (fake — label only)">
+      <button type="button" class="primary" onclick="doTransfer('deposit')">Deposit</button>
+      <button type="button" class="danger" onclick="doTransfer('withdraw')">Withdraw</button>
+    </form>
+    <div id="transferHistory" class="log" style="max-height:160px"></div>
+    <div class="empty" id="transferEmpty" hidden>No deposits or withdrawals yet.</div>
+  </section>
+
+  <div class="grid2">
+    <section>
+      <h2>Equity curve</h2>
+      <div class="chart-box"><canvas id="equityChart" aria-label="Equity over time"></canvas></div>
+    </section>
+    <section>
+      <h2>Allocation</h2>
+      <div id="alloc"></div>
+    </section>
+  </div>
+
+  <section>
+    <h2>Open positions</h2>
+    <div style="overflow-x:auto"><table id="positions">
+      <thead><tr><th>Market</th><th>Side</th><th class="num">Size</th><th class="num">Avg</th>
+      <th>Mark</th><th class="num">Value</th><th class="num">Unrealized</th><th>Source</th><th></th></tr></thead>
+      <tbody></tbody></table></div>
+    <div class="empty" id="posEmpty" hidden>No open simulated positions yet — copied trades will appear here.</div>
+  </section>
+
+  <section>
+    <h2>Followed wallets</h2>
+    <form class="addw" id="addWallet">
+      <input name="address" placeholder="0x… wallet address" required pattern="0x[a-fA-F0-9]{40}">
+      <input name="label" placeholder="Label (optional)">
+      <select name="sizing_mode" id="sizingMode">
+        <option value="percent_balance">% of balance</option>
+        <option value="fixed_usd">Fixed USD</option>
+        <option value="proportional">Proportional</option>
+      </select>
+      <input name="sizing_value" id="sizingValue" type="number" step="any" min="0" placeholder="Fraction, e.g. 0.20 = 20%" required>
+      <button class="primary" type="submit">Follow</button>
+    </form>
+    <div style="overflow-x:auto"><table id="wallets">
+      <thead><tr><th>Wallet</th><th>Label</th><th>Sizing</th><th class="num">Closed</th>
+      <th class="num">Win rate</th><th class="num">PF</th><th class="num">Realized</th>
+      <th>Status</th><th></th></tr></thead>
+      <tbody></tbody></table></div>
+  </section>
+
+  <section>
+    <h2>Wallet scout — automatic discovery</h2>
+    <div class="scout-note" id="scoutNote"></div>
+    <div style="overflow-x:auto;max-height:320px"><table id="scout">
+      <thead><tr><th>Wallet</th><th>Source</th><th class="num">Score</th><th class="num">Trips</th>
+      <th class="num">Win rate</th><th class="num">PF</th><th class="num">Drawdown</th>
+      <th class="num">Extreme</th><th>Category</th><th>Verdict</th></tr></thead>
+      <tbody></tbody></table></div>
+    <div class="empty" id="scoutEmpty" hidden>No candidates evaluated yet — the scout sweeps the leaderboard on its own schedule.</div>
+  </section>
+
+  <div class="grid2">
+    <section>
+      <h2>Copied trades</h2>
+      <div style="overflow-x:auto;max-height:360px"><table id="trades">
+        <thead><tr><th>When</th><th>Market</th><th>Action</th><th class="num">Size</th>
+        <th class="num">Fill</th><th class="num">Notional</th><th class="num">PnL</th></tr></thead>
+        <tbody></tbody></table></div>
+      <div class="empty" id="tradesEmpty" hidden>No simulated trades executed yet.</div>
+    </section>
+    <section>
+      <h2>Activity &amp; errors</h2>
+      <div class="log" id="log"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = (s)=>document.querySelector(s);
+const fmt$ = (v)=>v==null?'—':'$'+Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmtN = (v)=>Number(v).toLocaleString(undefined,{maximumFractionDigits:1});
+const fmtP = (v)=>v==null?'—':Number(v).toFixed(1)+'%';
+const cls  = (v)=>v>0?'pos':(v<0?'neg':'');
+const when = (ts)=>new Date(ts*1000).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+
+let chart;
+function drawChart(points, starting){
+  const ctx = $('#equityChart').getContext('2d');
+  const labels = points.map(p=>when(p.ts));
+  const data = points.map(p=>p.equity);
+  if(chart){ chart.data.labels=labels; chart.data.datasets[0].data=data; chart.update('none'); return; }
+  chart = new Chart(ctx,{type:'line',data:{labels,datasets:[{
+      data, borderColor:'#38d9a9', borderWidth:1.5, pointRadius:0, tension:.25,
+      fill:true, backgroundColor:'rgba(56,217,169,.07)'}]},
+    options:{plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmt$(c.parsed.y)}}},
+      scales:{x:{ticks:{color:'#8a97ad',maxTicksLimit:6,font:{family:'monospace',size:10}},grid:{color:'#1a2539'}},
+              y:{ticks:{color:'#8a97ad',callback:v=>fmt$(v),font:{family:'monospace',size:10}},grid:{color:'#1a2539'}}},
+      animation:false,maintainAspectRatio:false}});
+}
+
+function statCard(k,v,extra=''){return `<div class="stat"><div class="k">${k}</div><div class="v ${extra}">${v}</div></div>`}
+
+// Dominant category from a candidate's category_mix (JSON string of
+// {category: buy-notional share} from the API) — best-effort, mirrors
+// scout.dominant_category() server-side; '—' when nothing was resolved.
+function dominantCategory(mixJson){
+  try{
+    const entries = Object.entries(JSON.parse(mixJson||'{}'));
+    if(!entries.length) return '—';
+    entries.sort((a,b)=>b[1]-a[1]);
+    return entries[0][0];
+  }catch(e){ return '—'; }
+}
+
+async function refresh(){
+  try{
+    const [summary,positions,trades,equity,events,scout,analytics,transfers,health] = await Promise.all([
+      fetch('/api/summary').then(r=>r.json()),
+      fetch('/api/positions?status=open').then(r=>r.json()),
+      fetch('/api/trades?limit=60').then(r=>r.json()),
+      fetch('/api/equity').then(r=>r.json()),
+      fetch('/api/events?limit=80').then(r=>r.json()),
+      fetch('/api/scout').then(r=>r.json()),
+      fetch('/api/analytics').then(r=>r.ok?r.json():{}).catch(()=>({})),
+      fetch('/api/transfers?limit=20').then(r=>r.ok?r.json():[]).catch(()=>([])),
+      fetch('/api/health').then(r=>r.ok?r.json():{}).catch(()=>({})),
+    ]);
+    $('#conn').textContent='live · updated '+new Date().toLocaleTimeString();
+    $('#conn').classList.remove('err');
+
+    // execution mode banner — must always be visible, never inferred
+    const badge = $('#modeBadge');
+    if(health.mode==='live'){
+      badge.classList.add('live');
+      badge.textContent = health.live_dry_run
+        ? 'LIVE MODE (DRY RUN) · NO ORDERS SENT'
+        : '⚠ LIVE TRADING · REAL FUNDS AT RISK';
+    } else {
+      badge.classList.remove('live');
+      badge.textContent = 'PAPER TRADING · NO REAL FUNDS';
+    }
+
+    // trading halt state
+    const trading = summary.trading||{copying:true};
+    const btn = $('#haltBtn');
+    btn.style.display='';
+    btn.textContent = trading.copying ? '⏸ STOP COPYING' : '▶ RESUME COPYING';
+    btn.classList.toggle('resume', !trading.copying);
+    btn.onclick = async ()=>{
+      if(trading.copying && !confirm('Stop copying? New buys are blocked; exits keep mirroring so risk can still come off.')) return;
+      await fetch('/api/trading',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({copying:!trading.copying})});
+      refresh();
+    };
+    $('#haltBanner').hidden = !!trading.copying;
+    if(!trading.copying) $('#haltBanner').textContent =
+      '⏸ COPYING HALTED ('+(trading.halt_reason||'manual')+') — exits still mirror; resume with the header button';
+
+    const m = summary.metrics;
+    const lat = analytics.copy_latency, pdiff = analytics.price_difference_bps;
+    $('#stats').innerHTML =
+      statCard('Equity',fmt$(m.equity)) +
+      statCard('Cash',fmt$(m.cash)) +
+      statCard('Unrealized PnL',fmt$(m.unrealized_pnl),cls(m.unrealized_pnl)) +
+      statCard('Realized PnL',fmt$(m.realized_pnl),cls(m.realized_pnl)) +
+      statCard('Total return',fmtP(m.total_return_pct),cls(m.total_return_pct)) +
+      statCard('Win rate',m.win_rate_pct==null?'—':fmtP(m.win_rate_pct)) +
+      statCard('Max drawdown',fmtP(m.max_drawdown_pct),m.max_drawdown_pct>0?'neg':'') +
+      statCard('Open / closed',`${m.open_positions} / ${m.closed_positions}`) +
+      statCard('Copy latency',(lat&&lat.median_s!=null)?lat.median_s.toFixed(0)+'s med':'—') +
+      statCard('Price diff',(pdiff&&pdiff.avg!=null)?pdiff.avg.toFixed(0)+' bps':'—',
+               (pdiff&&pdiff.avg>0)?'neg':'') +
+      statCard('Missed edge',analytics.missed_edge_usd!=null?fmt$(analytics.missed_edge_usd):'—',
+               analytics.missed_edge_usd>0?'neg':'');
+
+    // deposits/withdrawals
+    $('#transferHistory').innerHTML = transfers.map(t=>`<div class="row">
+      <span class="lvl ${t.kind==='deposit'?'info':'warning'}"></span><time>${when(t.ts)}</time>
+      <span>${t.kind==='deposit'?'Deposit':'Withdraw'} ${fmt$(t.amount)}${t.address?' — '+esc(t.address):''}
+      <span class="outcome">(cash after ${fmt$(t.cash_after)})</span></span></div>`).join('');
+    $('#transferEmpty').hidden = transfers.length>0;
+
+    // allocation
+    const total = summary.allocation.reduce((s,a)=>s+a.value,0)||1;
+    $('#alloc').innerHTML = summary.allocation.length ? summary.allocation.slice(0,10).map(a=>`
+      <div class="alloc-row">
+        <div><div class="alloc-label">${esc(a.title)} <span class="outcome">${esc(a.outcome)}</span></div>
+        <div class="alloc-bar"><i style="width:${(100*a.value/total).toFixed(1)}%"></i></div></div>
+        <div style="text-align:right">${fmt$(a.value)}</div>
+      </div>`).join('') : '<div class="empty">Nothing allocated yet.</div>';
+
+    // positions
+    const ptb = $('#positions tbody');
+    ptb.innerHTML = positions.map(p=>{
+      const mark = p.mark_price ?? p.avg_price;
+      return `<tr>
+        <td class="title-cell" title="${esc(p.title)}">${esc(p.title)||p.asset.slice(0,12)}</td>
+        <td>${esc(p.outcome)}</td>
+        <td class="num">${fmtN(p.size)}</td>
+        <td class="num">${Number(p.avg_price).toFixed(3)}</td>
+        <td><div class="prob"><i style="width:${(mark*100).toFixed(0)}%"></i><span>${(mark*100).toFixed(0)}¢</span></div></td>
+        <td class="num">${fmt$(p.market_value)}</td>
+        <td class="num ${cls(p.unrealized_pnl)}">${fmt$(p.unrealized_pnl)}</td>
+        <td>${p.wallet.slice(0,6)}…${p.wallet.slice(-4)}</td>
+        <td class="num"><button class="small danger" onclick="closePosition(${p.id})">Close</button></td></tr>`;
+    }).join('');
+    $('#posEmpty').hidden = positions.length>0;
+
+    // wallets (merged with per-wallet copied-performance metrics)
+    const wmByAddr = Object.fromEntries((summary.wallet_metrics||[]).map(m=>[m.wallet,m]));
+    $('#wallets tbody').innerHTML = summary.wallets.map(w=>{
+      const m = wmByAddr[w.address]||{};
+      return `<tr>
+      <td>${w.address.slice(0,10)}…${w.address.slice(-6)}${w.auto?' <span class="tag">AUTO</span>':''}</td>
+      <td class="title-cell">${esc(w.label)||'—'}</td>
+      <td>${w.sizing_mode} · ${w.sizing_value} ×${w.multiplier}</td>
+      <td class="num">${m.closed_trades??0}</td>
+      <td class="num">${m.win_rate_pct==null?'—':fmtP(m.win_rate_pct)}</td>
+      <td class="num">${m.profit_factor==null?'—':Number(m.profit_factor).toFixed(2)}</td>
+      <td class="num ${cls(m.realized_pnl)}">${fmt$(m.realized_pnl??0)}</td>
+      <td>${w.active?'<span class="pos">active</span>':'<span class="outcome">paused</span>'}</td>
+      <td class="num">
+        <button class="small" onclick="toggleWallet('${w.address}',${w.active?0:1})">${w.active?'Pause':'Resume'}</button>
+        <button class="small danger" onclick="removeWallet('${w.address}')">Remove</button>
+      </td></tr>`;
+    }).join('')
+      || '<tr><td colspan="9" class="empty">No wallets followed yet — the scout will add some automatically, or add one above.</td></tr>';
+
+    // scout candidates
+    const noteEl = $('#scoutNote');
+    if (!scout.enabled) {
+      noteEl.textContent = 'scout disabled in config — wallets are only added manually';
+      noteEl.classList.remove('warn');
+    } else if (scout.last_failure) {
+      const mins = Math.max(0, Math.round((Date.now()/1000 - scout.last_failure.ts) / 60));
+      noteEl.textContent = `last sweep failed ${mins}m ago: ${scout.last_failure.message}`;
+      noteEl.classList.add('warn');
+    } else {
+      noteEl.textContent = `scanning the leaderboard automatically · auto-follow ${scout.auto_follow?'on':'off'} · ${scout.max_auto_wallets} auto slots`;
+      noteEl.classList.remove('warn');
+    }
+    const cands = scout.candidates||[];
+    $('#scout tbody').innerHTML = cands.map(c=>{
+      const verdict = c.followed ? '<span class="tag">FOLLOWED</span>'
+        : c.passed ? '<span class="tag pass">PASS</span>'
+        : `<span class="tag fail">REJECTED</span> <span class="reason" title="${esc(c.reasons)}">${esc(c.reasons)}</span>`;
+      return `<tr>
+      <td>${c.wallet.slice(0,10)}…${c.wallet.slice(-6)}${c.name?` <span class="outcome">${esc(c.name)}</span>`:''}</td>
+      <td>${esc(c.source)}</td>
+      <td class="num">${c.score==null?'—':Number(c.score).toFixed(0)}</td>
+      <td class="num">${c.closed_trades}</td>
+      <td class="num">${c.win_rate==null?'—':(100*c.win_rate).toFixed(0)+'%'}</td>
+      <td class="num">${c.profit_factor==null?'—':Number(c.profit_factor).toFixed(2)}</td>
+      <td class="num">${c.max_drawdown_pct==null?'—':fmtP(c.max_drawdown_pct)}</td>
+      <td class="num">${c.extreme_entry_share==null?'—':(100*c.extreme_entry_share).toFixed(0)+'%'}</td>
+      <td>${esc(dominantCategory(c.category_mix))}</td>
+      <td>${verdict}</td></tr>`;
+    }).join('');
+    $('#scoutEmpty').hidden = cands.length>0;
+
+    // trades
+    $('#trades tbody').innerHTML = trades.map(t=>`<tr>
+      <td>${when(t.source_ts)}</td>
+      <td class="title-cell" title="${esc(t.title)}">${esc(t.title)} <span class="outcome">${esc(t.outcome)}</span></td>
+      <td class="${t.side==='BUY'?'pos':'neg'}">${t.kind.replace('_',' ')}</td>
+      <td class="num">${fmtN(t.size)}</td>
+      <td class="num">${Number(t.price).toFixed(3)}</td>
+      <td class="num">${fmt$(t.notional)}</td>
+      <td class="num ${cls(t.realized_pnl)}">${t.side==='SELL'?fmt$(t.realized_pnl):'—'}</td></tr>`).join('');
+    $('#tradesEmpty').hidden = trades.length>0;
+
+    // log
+    $('#log').innerHTML = events.map(e=>`<div class="row">
+      <span class="lvl ${e.level}"></span><time>${when(e.ts)}</time>
+      <span>${esc(e.message)}</span></div>`).join('');
+
+    drawChart(equity, m.starting_balance);
+  }catch(err){
+    $('#conn').textContent='connection lost — retrying';
+    $('#conn').classList.add('err');
+  }
+}
+
+function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+
+const SIZING_PLACEHOLDERS = {
+  percent_balance: 'Fraction, e.g. 0.20 = 20%',
+  percent_starting_balance: 'Fraction, e.g. 0.20 = 20%',
+  fixed_usd: 'USD amount, e.g. 100',
+  proportional: 'Risk multiplier, e.g. 1.0',
+};
+$('#sizingMode').addEventListener('change', (e)=>{
+  $('#sizingValue').placeholder = SIZING_PLACEHOLDERS[e.target.value] || '';
+});
+$('#addWallet').addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const body = {address:f.get('address'),label:f.get('label'),
+    sizing_mode:f.get('sizing_mode'),sizing_value:Number(f.get('sizing_value')),multiplier:1.0};
+  const r = await fetch('/api/wallets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok){
+    const d = (await r.json()).detail;
+    alert(Array.isArray(d) ? (d[0]?.msg || 'Could not add wallet') : (d || 'Could not add wallet'));
+    return;
+  }
+  e.target.reset(); refresh();
+});
+async function toggleWallet(addr,active){
+  await fetch('/api/wallets/'+addr,{method:'PATCH',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({active:!!active})}); refresh();
+}
+async function removeWallet(addr){
+  if(!confirm('Remove '+addr+' from the followed list? Trade history and open simulated positions are kept, but the wallet disappears from this list and the scout will never re-add it. Use Pause instead if you just want to stop copying temporarily.'))return;
+  await fetch('/api/wallets/'+addr,{method:'DELETE'}); refresh();
+}
+async function closePosition(id){
+  if(!confirm('Close this position now at the current mark? This cannot be undone.'))return;
+  const r = await fetch('/api/positions/'+id+'/close',{method:'POST'});
+  if(!r.ok){alert('Could not close position ('+r.status+')');return}
+  refresh();
+}
+async function doTransfer(kind){
+  const form = $('#transferForm');
+  const amount = Number(form.amount.value);
+  const address = form.address.value;
+  if(!amount || amount<=0){alert('Enter a positive amount');return}
+  if(kind==='withdraw' && !confirm('Withdraw '+fmt$(amount)+' from the paper balance? This cannot be undone.'))return;
+  const r = await fetch('/api/'+kind,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({amount,address})});
+  if(!r.ok){
+    const d = (await r.json()).detail;
+    alert(Array.isArray(d) ? (d[0]?.msg || 'Transfer failed') : (d || 'Transfer failed'));
+    return;
+  }
+  form.reset();
+  refresh();
+}
+
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>

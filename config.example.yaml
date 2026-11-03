@@ -1,0 +1,429 @@
+# ============================================================================
+# POLYMIRROR CONFIGURATION
+# Paper Trading by Default — Live Execution is Optional and Off by Default
+# ============================================================================
+# Copy this file to config.yaml and adjust as needed.
+# With execution.mode left at "paper" (the default), this application NEVER
+# places real trades or signs blockchain transactions. Live execution
+# (execution.mode: live) is an opt-in feature gated by several independent
+# switches in the `live:` section below — see the comments there before
+# touching any of them. Credentials are NEVER written in this file, only
+# the NAMES of environment variables that hold them.
+# ============================================================================
+
+starting_balance: 10000          # Virtual USD
+poll_interval_seconds: 10
+mark_interval_seconds: 60
+reconcile_interval_seconds: 300
+backfill_seconds: 0
+
+db_path: data/polymirror.db
+log_path: data/polymirror.log
+
+host: 127.0.0.1
+port: 8400
+
+max_requests_per_second: 5
+
+# ============================================================================
+# EXECUTION
+# ============================================================================
+
+execution:
+  mode: paper                      # paper | live — see `live:` below before ever setting "live"
+  price_mode: market_quote         # source_price | market_quote
+  slippage_bps: 15
+  fee_bps: 0
+  simulated_latency_ms: 1500
+  randomize_latency: true
+  latency_jitter_ms: 750
+  min_trade_usd: 2
+  max_trade_usd: null
+
+# ============================================================================
+# LIVE EXECUTION (placeholders — inert unless execution.mode is "live")
+# ============================================================================
+# Enabling this trades REAL funds on Polymarket (Polygon mainnet by
+# default). Every field below is a placeholder / safety switch; none of it
+# does anything while execution.mode is "paper".
+#
+# Credential safety: this section NEVER holds a private key, API secret, or
+# passphrase — only the NAMES of environment variables that hold them. Set
+# those variables in your shell or a secret manager (e.g. `export
+# POLYMARKET_PRIVATE_KEY=...`), never here, and never commit them anywhere.
+#
+# To actually go live you must set ALL of:
+#   1. execution.mode: live
+#   2. live.confirm: true              (a deliberate, separate opt-in)
+#   3. live.max_live_notional_usd > 0  (hard per-order cap; 0 blocks every
+#                                        live order even with mode: live)
+#   4. the environment variables named below, containing real values
+#   5. pip install py-clob-client      (optional dependency, live-mode only)
+# Missing any one of 1-3 makes the config fail validation at startup — see
+# Config.validate() in polymirror/config.py. This is intentional: there is
+# no single typo that can turn live trading on.
+#
+# live.dry_run defaults to true even once everything above is set: orders
+# are built and signed but never submitted to the exchange, only logged —
+# a dress rehearsal step before flipping the very last switch.
+live:
+  confirm: false                              # must be true, deliberately, to allow live mode
+  dry_run: true                                # true = sign & log orders, never submit them
+  private_key_env: POLYMARKET_PRIVATE_KEY              # EOA private key (hex, 0x-prefixed)
+  funder_address_env: POLYMARKET_FUNDER_ADDRESS        # Polymarket proxy/funder wallet address
+  clob_api_key_env: POLYMARKET_CLOB_API_KEY            # optional — derived from the key if unset
+  clob_api_secret_env: POLYMARKET_CLOB_API_SECRET      # optional — derived from the key if unset
+  clob_api_passphrase_env: POLYMARKET_CLOB_API_PASSPHRASE  # optional — derived if unset
+  chain_id: 137                                 # Polygon mainnet
+  signature_type: 0                             # 0=EOA, 1=email/magic proxy, 2=browser wallet proxy
+  order_type: FOK                               # GTC | FOK | GTD — FOK recommended: fills fully
+                                                  # now or does nothing; GTC/GTD can rest on the
+                                                  # book and fill later/partially, which Polymirror
+                                                  # does not currently poll or cancel on a timeout
+  max_live_notional_usd: 0                      # hard cap per order; 0 blocks all live trades
+
+# ============================================================================
+# POSITION SIZING
+# ============================================================================
+
+default_sizing:
+  mode: fixed_usd                  # proportional | fixed_usd | percent_balance
+  value: 100                       # USD per trade for newly auto-followed wallets
+  multiplier: 1.0
+
+# ============================================================================
+# PORTFOLIO RISK LIMITS
+# ============================================================================
+
+portfolio:
+
+  max_open_positions: 50
+
+  max_single_market_pct: 20
+
+  # Independent rules, not two views of the same thing: this one is
+  # judged against a FIXED reference (starting_balance) and only today's
+  # window, so it catches one bad day fast. See PortfolioConfig's
+  # docstring in config.py for the worked example of how this and
+  # max_total_drawdown_pct interact (neither one subsumes the other).
+  max_daily_loss_pct: 10
+
+  max_total_drawdown_pct: 15
+
+  stop_copy_after_drawdown: true
+
+# ============================================================================
+# NOTIFICATIONS
+# ============================================================================
+
+notifications:
+
+  enabled: true
+
+  min_level: info
+
+  discord_webhook_url: null
+
+  telegram_bot_token: null
+
+  telegram_chat_id: null
+
+  generic_webhook_url: null
+
+# ============================================================================
+# WALLET DISCOVERY
+# ============================================================================
+
+scout:
+
+  enabled: true
+
+  interval_seconds: 21600
+
+  leaderboard_base: https://data-api.polymarket.com
+
+  leaderboard_windows:
+
+    - 1w
+
+    - 1m
+
+    - all
+
+  leaderboard_limit: 50
+
+  # Leaderboard verticals to discover from (the API also accepts POLITICS,
+  # SPORTS, CRYPTO, and others). The default preserves the original
+  # behavior of only scanning the blended overall leaderboard. Add more to
+  # feed diversification.max_category_share_pct below actual candidates to
+  # balance across — the overall leaderboard alone tends to skew toward
+  # whichever vertical trades the highest volume (typically sports).
+  categories:
+
+    - OVERALL
+
+  candidate_wallets: []
+
+  lookback_days: 180
+
+  reeval_hours: 24
+
+  auto_follow: true
+
+  max_auto_wallets: 5
+
+# ============================================================================
+# MINIMUM REQUIREMENTS
+# ============================================================================
+
+requirements:
+
+  # n>=30 is the classical rule-of-thumb minimum sample for a win rate to
+  # start behaving normally — 15 round-trips is thin enough that even a
+  # genuinely +EV 55%-win-rate trader has a meaningful chance of showing
+  # a losing record purely by chance.
+  min_closed_trades: 30
+
+  min_roi_pct: 15
+
+  min_profit_factor: 1.5
+
+  min_realized_pnl_usd: 500
+
+  min_win_rate_pct: 55
+
+  # A second, complementary defense against thin samples: the 95% Wilson
+  # confidence lower bound on the observed win rate must also clear this
+  # (much lower) bar. Answers "is there enough evidence", not "is the
+  # trader good" — a candidate must pass both this and min_win_rate_pct.
+  min_win_rate_confidence_pct: 30
+
+  max_drawdown_pct: 25
+
+  min_positive_month_ratio: 0.70
+
+  max_extreme_entry_share: 0.30
+
+  extreme_price_band: 0.05
+
+  max_market_concentration: 0.40
+
+  min_market_volume_usd: 25000
+
+  min_market_liquidity_usd: 10000
+
+# ============================================================================
+# WALLET SCORING
+# ============================================================================
+
+scoring:
+
+  minimum_score: 75
+
+  weights:
+
+    roi: 0.20
+
+    profit_factor: 0.20
+
+    consistency: 0.15
+
+    drawdown: 0.15
+
+    pnl: 0.10
+
+    diversification: 0.10
+
+    win_rate: 0.05
+
+    liquidity: 0.05
+
+# ============================================================================
+# COPY FILTERS
+# ============================================================================
+
+copy_filters:
+
+  copy_buys: true
+
+  copy_sells: true
+
+  max_entry_price: 0.90
+
+  min_entry_price: 0.10
+
+  min_market_liquidity_usd: 10000
+
+  ignore_markets_near_resolution: true
+
+  ignore_duplicate_events: true
+
+# ============================================================================
+# CORRELATION CONTROL
+# ============================================================================
+
+diversification:
+
+  enabled: true
+
+  max_wallet_correlation: 0.80
+
+  max_market_overlap_pct: 60
+
+  # Caps one category's share of the followed roster's DOMINANT categories
+  # (e.g. don't let 5 of 5 auto slots all be sports specialists) —
+  # separate from max_market_overlap_pct, which only catches overlap in
+  # specific markets and would miss a wallet trading 50 different NFL
+  # games. Needs scout.categories above to include more than just OVERALL
+  # to have real candidates to balance across.
+  max_category_share_pct: 60
+
+# ============================================================================
+# AUTO WITHDRAW (profit-taking)
+# ============================================================================
+# Every time cumulative REALIZED PnL (closed trades only, not unrealized
+# swings) climbs past another increment, that fixed amount is swept out of
+# the tradeable cash balance into the withdrawal ledger — same mechanism
+# as a manual dashboard withdrawal. One-way: a later loss never claws back
+# a past sweep, and a loss never lets a future sweep happen early.
+# Paper-mode bookkeeping only.
+#
+# mode picks how the increment is expressed:
+#   fixed_usd                A flat dollar figure (profit_increment_usd).
+#                             Doesn't scale if you change starting_balance
+#                             below — $500 is 50% of a $1,000 account and
+#                             0.5% of a $100,000 one.
+#   percent_starting_balance A percentage of starting_balance
+#                             (profit_increment_pct) — scales automatically
+#                             if you change starting_balance. Recommended
+#                             unless you specifically want an unchanging
+#                             dollar figure.
+
+auto_withdraw:
+
+  enabled: false
+
+  mode: percent_starting_balance          # fixed_usd | percent_starting_balance
+
+  profit_increment_usd: 500               # used when mode: fixed_usd
+
+  profit_increment_pct: 5                 # used when mode: percent_starting_balance
+
+# ============================================================================
+# AUTO MANAGEMENT
+# ============================================================================
+
+auto_manage:
+
+  enabled: true
+
+  interval_seconds: 600
+
+  min_closed_trades: 15
+
+  pause_profit_factor: 0.90
+
+  pause_loss_pct: 8
+
+  pause_drawdown_pct: 12
+
+  resume_after_hours: 72
+
+# ============================================================================
+# POSITION RISK (per-position take-profit / stop-loss)
+# ============================================================================
+# Automatic take-profit / stop-loss on individual copied positions,
+# independent of whether the source trader has exited yet. Checked every
+# mark-to-market cycle against each position's unrealized return since
+# entry. Paper simulation only — a full exit, no real funds ever involved.
+#
+# take_profit_room_pct is a fraction of the REMAINING ROOM TO $1, not a
+# flat percentage of entry price — outcome tokens are bounded in (0, 1),
+# so a position bought at 0.90 can never gain 50% of its entry price (max
+# possible upside from there is ~11%). 50 here means "exit once half the
+# distance from entry to certainty has been captured."
+
+position_risk:
+
+  enabled: true
+
+  take_profit_room_pct: 50
+
+  stop_loss_pct: 25
+
+# ============================================================================
+# SETTLEMENT (resolved-market accounting)
+# ============================================================================
+# Settles open positions at their real payout — $1 or $0 — as soon as the
+# market resolves, by asking the Gamma API directly.
+#
+# Leave this ON. Without it the ONLY path to settlement is the source
+# wallet's own on-chain REDEEM event, and traders only ever redeem
+# WINNERS: a losing outcome token is worthless, so nobody pays gas to
+# claim $0. Losing copies therefore never settled at all — they stayed
+# open forever, carried at their entry-era mark (a resolved market returns
+# no CLOB midpoint, so mark-to-market silently leaves the last price in
+# place), while every winner booked a full $1. The equity curve could only
+# ratchet upward. That is not a strategy result, it is an accounting
+# artifact, and it inflated this project's own early paper record by
+# roughly the entire reported profit.
+#
+# A market is only settled when Gamma reports it closed AND the outcome
+# price is decisively 0 or 1. Anything else — still trading, disputed,
+# mid-resolution, or a token id that doesn't match the payload — is left
+# open and never guessed at. A market quoting 0.98 is a near-certainty,
+# not a resolution.
+#
+# unresolved_alert_hours warns about positions still open long after they
+# should have resolved. That warning almost always means Gamma's payload
+# shape changed and token ids stopped matching — diagnose it with:
+#     python scripts/probe_resolution.py <condition_id>
+
+settlement:
+
+  enabled: true
+
+  interval_seconds: 300
+
+  # Warn about positions open this long with no readable resolution (0 disables).
+  unresolved_alert_hours: 48
+
+# ============================================================================
+# ANALYTICS
+# ============================================================================
+
+analytics:
+
+  track_alpha_decay: true
+
+  track_copy_latency: true
+
+  track_price_difference: true
+
+  track_missed_edge: true
+
+  equity_snapshot_seconds: 60
+
+# ============================================================================
+# HEALTH MONITORING
+# ============================================================================
+
+health:
+
+  heartbeat_seconds: 30
+
+  stale_wallet_minutes: 15
+
+  alert_on_api_failure: true
+
+# ============================================================================
+# LOGGING
+# ============================================================================
+
+logging:
+
+  level: INFO
+
+  rotate_mb: 25
+
+  backups: 10
